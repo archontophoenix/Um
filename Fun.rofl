@@ -1,0 +1,52 @@
+x = x
+
+;; TODO:
+;; This isn't really right. If you use the same lambda more than once in
+;; an expression, unifications at the first use are still in effect at the
+;; second use -- the intent instead is to make a *fresh* copy of (v\ body)
+;; at each application so that its bindings don't contaminate subsequent
+;; applications.
+;; Don't similar considerations apply to all the other forms of => below?
+[fun arg] => result ~|
+  fun => (pat\ body),
+  arg => pat,
+  body => result
+
+(fun |: arg0 |: arg1 |: maybeMoreArgs) => result ~|
+  [fun arg0] => fun1,
+  (fun1 |: arg1 |: maybeMoreArgs) => result
+
+name => result ~|
+  (name ~~ definition),
+  definition => result
+
+v => v ~|
+  IsValue v
+
+IsValue (pat\ body)
+
+IsValue 0
+IsValue (S |: n) ~|
+  IsValue n
+
+(+) ~~ 0\ n\ n
+(+) ~~ (S |: m)\ n\ m + (S |: n)
+
+(*) ~~ 0\ n\ 0
+(*) ~~ (S |: m)\ n\ n + m * n
+
+IsEven 0
+IsEven (S |: S |: n) ~|
+  IsEven n
+
+0 < (S |: n)
+(S |: m) < (S |: n) ~|
+  m < n
+
+IsComposite p ~|
+  m < p,
+  n < p,
+  m * n => p
+
+IsPrime p ~|
+  IsComposite p ?? Never !! Always

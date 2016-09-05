@@ -1,0 +1,21 @@
+No: Typ
+
+Yes: Typ
+[]: Yes
+
+Bool: Typ
+True: Bool
+False: Bool
+
+Nat: Typ
+[]: Nat
+(1 |: n): Nat ~|
+  n: Nat
+
+List a: Typ ~|
+  a: Typ
+[]: List a ~|
+  a: Typ
+(hd |: tl): List a ~|
+  hd: a,
+  tl: List a
