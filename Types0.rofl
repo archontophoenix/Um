@@ -8,8 +8,8 @@ True: Bool
 False: Bool
 
 Nat: Typ
-[]: Nat
-(1 |: n): Nat ~|
+0: Nat
+(S |: n): Nat ~|
   n: Nat
 
 List a: Typ ~|

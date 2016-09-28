@@ -86,6 +86,7 @@ object Uh {
   def isCloseDelim (ch: CodePoint) = closeDelimCharTypes.contains(charType(ch))
   def isPunctuation (ch: CodePoint) =
     isCaret(ch) || (punctCharTypes.contains(charType(ch)) & ! isAsciiQuote(ch))
+  def isOperatorStart (ch: CodePoint) = isBackquote(ch) || isPunctuation(ch)
   def isSemicolon (ch: CodePoint) = ch.code == ';'
 
   // Operator syntax (unary and binary) ////////////////////////////////////////
@@ -313,24 +314,24 @@ object Uh {
   }
   case class StartOfInputToken (where: Location) extends Token {
     def text = ""
-    def tokenType  = OpenDelimToken
+    def tokenType = OpenDelimToken
     override def toString: String = where.toString
   }
   case class EndOfInputToken (where: Location) extends Token {
     def text = ""
-    def tokenType  = CloseDelimToken
+    def tokenType = CloseDelimToken
     override def toString: String = s"end of input at $where"
   }
 
   // Transforming characters into tokens (first compilation pass) //////////////
 
   type Chs = Input[CodePoint]
+  def chListToString (chs: List[Ch]): String =
+    new String(chs.map(_._1.code).toArray,0,chs.size)
   val token: Parser[CodePoint,Token] = {
     def chsToToken (chs: List[Ch]): Token =
-      if (chs.isEmpty)
-        sys.error("Empty token!")
-      else
-        TextToken(new String(chs.map(_._1.code).toArray,0,chs.size),chs.head._2)
+      if (chs.isEmpty) sys.error("Empty token!")
+      else TextToken(chListToString(chs),chs.head._2)
     oneOf(separator,openDelim,closeDelim,leftUnSym,rightUnSym,binSym).
       map { chs: List[Ch] => chsToToken(chs) }
   }
@@ -407,9 +408,9 @@ object Uh {
             (Good(atom(Num(t.text,n),t)),rest)
           case Bad(_,_) =>
             val (next,after) = rest.nonEmptySplit
-            if (next.text != "[") // just an identifer?
+            if (next.text != "[")       // just an identifer...
               (Good(sym(t)),rest)
-            else // or a compound delimiter?
+            else                        // ... or a compound delimiter?
               compoundDelimiter(t,next,t.text + "[",Nil).split(after)
         }
       case CharLiteralToken =>
@@ -704,6 +705,15 @@ object Uh {
 
   // Delimited token sequences /////////////////////////////////////////////////
 
+// TODO: allow choice of operator to infer between { and }.
+// Prefix { with operator.
+//   { ... }   is synonym for   ;{ ... }
+// but could allow, e.g.,
+//   +{ ... }   to add a bunch of complicated things
+//   ::{ ... }   to make a list of complicated things
+// etc.
+//   id{ ... }   infers `id
+// operator can be binary or id
   def delimited (open: Token): TokenParser = {
     val (contentParsers,what,closerText): (Seq[TokenParser],String,String) =
       open.text match {
@@ -760,6 +770,8 @@ object Uh {
 
   // Compound delimiters: id[...]id[...] ... [...]id ///////////////////////////
 
+// TODO: extend to allow binOpOrID[...]binOpOrID[ ... ] ...
+// TODO: also allow binOpOrID[...][...] ... [...] (i.e., optional intervening)
   def compoundDelimiter (
       firstOpener: Token, latestOpenBracket: Token, delimiterText: String,
       accumContents: List[Exp]): TokenParser = Parser(in =>
@@ -809,7 +821,100 @@ object Uh {
       case (fail @ Bad(_,_),_) => (fail,aftermath)
     }
   })
- 
+
+  // Conversion of Exp to string, recognizing Uh expression syntax /////////////
+
+  def uhStringPrecedenceLeftAssoc [A] (
+        sexp: Sexp[A,_], uhAtom: A => Option[Atomic]):
+      (String,Option[(Int,Boolean)]) = {
+    object UhAtom {
+      def unapply (a: A): Option[Atomic] = uhAtom(a)
+    }
+    def valid (s: String, p: ParseChs): Boolean =
+      p.matchWith(LocChs.fromChars(s)) match {
+        case Good(_) => true
+        case Bad(_,_) => false
+      }
+    def validId (s: String) = valid(s,identSym)
+    def validRightUn (s: String) = valid(s,rightUnSym)
+    def validBin (s: String) = valid(s,binSym)
+    def maybeParen (sexp: Sexp[A,_], prec: Int, assoc: Boolean): String =
+      uhStringPrecedenceLeftAssoc(sexp,uhAtom) match {
+        case (s,Some((p,a))) =>
+          if ((p < prec || (p == prec && a != assoc))
+              && ! (s.startsWith("(") || s.startsWith("[")))
+            s"($s)"
+          else
+            s
+        case (s,None) =>
+          s
+      }
+    def lissString (liss: Liss[A,_]): String =
+      liss.mapElems((e: Sexp[A,_]) => maybeParen(e,Integer.MAX_VALUE,true)).
+        mkString("["," ","]")
+    def compoundHead: Parser[CodePoint,List[List[Ch]]] =
+      zeroOrOne(oneOf(identSym,binSym)).separatedBy(openBracket * closeBracket)
+    def compound (op: String, args: Liss[A,_]): Option[String] =
+      compoundHead.matchWith(LocChs.fromChars(op)) match {
+        case Bad(_,_) =>
+          None
+        case Good(components) =>
+          def go (
+                components: List[List[Ch]], args: Liss[A,_], acc: String):
+              Option[String] =
+            (components,args) match {
+              case (cpt :: Nil,Empty()) =>
+                Some(acc ++ chListToString(cpt))
+              case (cpt :: cpts,(arg: Liss[A,_]) :|: args) =>
+                go(cpts,args,acc ++ chListToString(cpt) ++ lissString(arg))
+              case _ =>
+                None
+            }
+          if (components.size < 2) None else go(components,args,"")
+      }
+    sexp match {
+      case Empty () =>
+        ("()",None)
+      case Atom(UhAtom(Sym(s))) =>
+        (if (validId(s)) s
+            else if (validRightUn(s) || validBin(s)) s"($s)"
+            else "(`\"" ++ s ++ "\")",
+          None)
+      case Atom(a) =>
+        (a.toString,None)
+      case Atom(UhAtom(Sym(s))) :|: arg :|: Empty() if validRightUn(s) =>
+        val (pr,assoc) = (maxBinaryPrecedence + 2,false)
+        (s"$s ${maybeParen(arg,pr,assoc)}",Some((pr,assoc)))
+      case Atom(UhAtom(Sym(s))) :|: arg0 :|: arg1 :|: Empty() if validBin(s) =>
+        val assoc = ! infixRightAssocEndings.contains(s.last)
+        val (inPrL,inPrR,outPr) =
+          infixPrecedences.get(CodePoint(s.codePointAt(0))) match {
+            case Some(p) => if (assoc) (p,p + 1,p) else (p + 1,p,p)
+            case None => (Integer.MAX_VALUE,Integer.MAX_VALUE,Integer.MIN_VALUE)
+          }
+        (s"${maybeParen(arg0,inPrL,assoc)} $s ${maybeParen(arg1,inPrR,assoc)}",
+          Some((outPr,assoc)))
+      case liss @ (Atom(UhAtom(Sym(s))) :|: arg0 :|: args) if validId(s) =>
+        val (pr,assoc) = (maxBinaryPrecedence + 1,true)
+        (liss.mapElems((e: Sexp[A,_]) => maybeParen(e,pr + 1,assoc)).
+            mkString(" "),
+          Some((pr,assoc)))
+      case liss @ (Atom(UhAtom(Sym(s))) :|: tail) => compound(s,tail) match {
+        case Some(rslt) => (rslt,None)
+        case None => (lissString(liss),None)
+      }
+      case liss: Liss[A,_] =>
+        (lissString(liss),None)
+      case hd |: tl =>
+        val (pr,assoc) = (infixPrecedences('|'),false)
+        (s"${maybeParen(hd,pr,assoc)} |: ${maybeParen(tl,pr,assoc)}",
+          Some(pr,assoc))
+    }
+  }
+  def uhString [A] (sexp: Sexp[A,_], uhAtom: A => Option[Atomic]): String =
+    uhStringPrecedenceLeftAssoc(sexp,uhAtom)._1
+  def uhStr (sexp: Exp): String = uhString(sexp,(a: Atomic) => Some(a))
+
   // Testing ///////////////////////////////////////////////////////////////////
 
   def testParse (s: String): Either[String,Exp] =
@@ -823,7 +928,7 @@ object Uh {
     testParse(s) match {
       case Right(res) =>
         res == e || {
-          println(s"Expected $e from '$s', but got $res")
+          println(s"Expected ${uhStr(e)} from '$s', but got ${uhStr(res)}")
           false
         }
       case Left(errMsg) =>
@@ -833,7 +938,7 @@ object Uh {
   def testShouldFail (s: String): Boolean =
     testParse(s) match {
       case Right(res) =>
-        println(s"'$s' should not have parsed, but it did: $res")
+        println(s"'$s' should not have parsed, but it did: ${uhStr(res)}")
         false
       case Left(_) =>
         true
@@ -905,6 +1010,8 @@ try:   try parsing expressions interactively
         test("(+ a)",Liss(lis("`^","+"),atm("a"))),
         test("((a))",atm("a")),
         test("(`\"a b\")",atm("a b")),
+        test("(`\"\")",atm("")),
+        testShouldFail("`a"),
         test("(())",Empty()),
         test("[()]",Liss(Empty())),
         test("[[[]]]",Liss(Liss(Empty()))),
@@ -983,7 +1090,9 @@ try:   try parsing expressions interactively
       val (in,stop) = takeLines(Nil)
       testParse(in) match {
         case Right(res) =>
-          println(s"\n$res\n\n${res.notedString}\n\n${res.fullyNotedString}\n")
+          println(
+            s"\n$res\n\n${uhStr(res)}\n\n${res.notedString}\n\n" ++
+              s"${res.fullyNotedString}\n")
         case Left(errMsg) =>
           println(errMsg)
       }

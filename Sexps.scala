@@ -57,6 +57,10 @@ object Sexps {
     def unnote: Liss[A,Nothing]
     def :|: [B >: A,M >: N] (newHead: Sexp[B,M]): ProperCons[B,M] =
       ProperCons(newHead,this)
+    def mapElems [B >: A,C,M >: N] (f: Sexp[B,M] => C): List[C] = this match {
+      case Empty() => Nil
+      case h :|: t => f(h) :: t.mapElems(f)
+    }
   }
   object Liss {
     def apply [A,N] (sexps: Sexp[A,N]*): Liss[A,N] =

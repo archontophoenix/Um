@@ -11,6 +11,61 @@ The goal is:
 . To create a typechecker, written in Rofl, for a dependently typed language
   (Duh) that will do general term inference.
 
+Status 28 September 2016:
+
+. Rofl has no known bugs (yay!), although still plenty of TODOs. Support for
+  hypotheticals will require rethinking (and I hope, simplifying) which queries
+  are primitive, and how unification represents variables and constants. Maybe
+  Rofl syntax can use vanilla Uh atoms (does Uh need to implement freshness?),
+  instead of making its own.
+
+. To build Rofl:
+
+    scalac -cp . *.scala
+
+. To run the REPL:
+
+    scala -cp . um.Rofl <rofl files...>
+
+  where the rofl files are concatenated to form the database against which
+  queries are made. For example:
+
+    scala -cp . um.Rofl Fun.rofl
+
+. I've implemented configurable search strategies for Rofl. The ones available
+  in Rofl.scala now are:
+
+  . DepthFirst: straightforward depth-first search (which is space-efficient
+    but incomplete).
+
+  . IterativeDeepening: breadth-first (complete) search that, if its search
+    queue gets too large, falls back to restarting the search from its root
+    query.
+
+  . Interactive: lets you choose the next node in the search tree to explore.
+
+  . VerboseStrategy: used in conjunction with another strategy, displays the
+    state of the search at each node in the search tree.
+
+. Along with search strategies, which choose what node in the search tree to
+  visit next, you can choose a Visitor, which decides what to do *at* a node
+  in the tree:
+
+  . StatsVisitor: accumulates a count of answers, failed unifications, and
+    search nodes encountered, and records the maximum search depth reached.
+
+  . AllAnswersVisitor: accumulates all answers found.
+
+  . CallbackVisitor: allows you to supply arbitrary code when an answer is
+    found, or there are no more answers, or the number of operations performed
+    has reached a limit that you supply. This is the basis for the REPL. You
+    would implement one of these to call Rofl from a program that wants to use
+    it (like a typechecker for Duh).
+
+. Fun.rofl's implementation of lambdas has been updated and seems to be working.
+  In effect, this gives you a functional programming language embedded in a
+  logic programming language.
+
 Status 5 September 2016:
 
 . Uh seems to be running fine. But if I were to rewrite it, I would probably
