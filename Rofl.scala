@@ -1,6 +1,7 @@
 package um
 
 import annotation.tailrec
+import collection.immutable.Queue
 import Fresh._
 import Sexps._
 import Uh.{Atomic,Exp,CharLiteral,Num,StringLiteral,Sym,uhString,uhStr}
@@ -27,8 +28,7 @@ import Valids._
  *       how best to represent rulebases and queries as data?
  */
 
-object Rofl extends RoflMachine(true)
-case class RoflMachine (allowRecursiveTerms: Boolean) {
+object Rofl {
 
   // Options ///////////////////////////////////////////////////////////////////
 
@@ -54,30 +54,17 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
   case class FreshVar (freshness: Freshness, v: Var) extends Var {
     override def toString: String = s"$v@$freshness"
   }
-  class Recursion private (val v: Var, val term: Term) extends RoflAtom {
-    override def toString: String = s"<<$v. ${str(term)}>>"
-  }
-  object Recursion {
-    def apply (v: Var, term: Term): Recursion = {
-      val fr = fresh()
-      new Recursion(freshenVar(v,fresh()),mapFresh(term,fr))
-    }
-    def unapply (r: Recursion): Option[(Var,Term)] = Some((r.v,r.term))
-  }
   case class Const (const: Atomic) extends RoflAtom {
     override def toString: String = uhStr(Atom(const))
   }
   def mapVarsToVars (t: Term, f: Var => Var): Term =
     t.map(a => a match {
-      case Recursion(v,term) => Recursion(f(v),mapVarsToVars(term,f))
       case v: Var => f(v)
       case _ => a
     })
   def mapVarsToTerms (
       t: Term, f: Var => Term, except: Set[Var] = Set.empty[Var]): Term =
     t.flatMap(a => a match {
-      case Recursion(v,term) =>
-        Atom(Recursion(v,mapVarsToTerms(t,f,except + v)))
       case v: Var if except.contains(v) =>
         Atom(v)
       case v: Var =>
@@ -93,7 +80,6 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
     mapVarsToVars(t,freshenVar(_,fr))
   def termFreeVariables (term: Term): Set[Var] = term match {
     case Atom(v: Var) => Set(v)
-    case Atom(Recursion(v,term)) => termFreeVariables(term) - v
     case h |: t => termFreeVariables(h) ++ termFreeVariables(t)
     case _ => Set.empty
   }
@@ -142,9 +128,9 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
   case class CannotUnify (m0: Term, m1: Term) extends UnifyFail {
     override def toString: String = s"Can't unify ${str(m0)} and ${str(m1)}"
   }
-  case class RecursiveUnify (v0: Var, m0: Term, m1: Term) extends UnifyFail {
+  case class RecursiveUnify (v: Var, m: Term) extends UnifyFail {
     override def toString: String =
-      s"Infinite term unifying $v0=${str(m0)} with ${str(m1)}"
+      s"$v defined in terms of itself in ${str(m)}"
   }
   object FalseFail extends Fail {
     override def toString: String = "Never query"
@@ -162,12 +148,30 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
   trait Unif {
     def flatMap (f: Frame => Unif): Unif
   }
-  case class Frame (subst: Map[Var,Term]) extends Unif {
+  case class Frame (private val subst: Map[Var,(Term,Set[Var])]) extends Unif {
     def flatMap (f: Frame => Unif) = f(this)
-    def unify (
-          m0: Term, m1: Term,
-          alreadyUnifying: Set[(Var,Term)] = Set.empty[(Var,Term)]):
-        Unif = 
+    def add (v: Var, m: Term): Unif = {
+      def occurs (queue: Queue[Var], alreadySeen: Set[Var]): Boolean =
+        queue.headOption match {
+          case None =>
+            false
+          case Some(h) =>
+            val seen = alreadySeen + h
+            subst.get(h) match {
+              case None =>
+                occurs(queue.tail,seen)
+              case Some((term,freeVars)) =>
+                freeVars.contains(v) ||
+                  occurs(queue.tail ++ (freeVars -- seen),seen)
+            }
+        }
+      val freeVars = termFreeVariables(m)
+      if (freeVars.contains(v) || occurs(Queue(freeVars.toSeq: _*),Set.empty))
+        RecursiveUnify(v,m)
+      else
+        Frame(subst + (v -> (m,freeVars)))
+    }
+    def unify (m0: Term, m1: Term): Unif =
       if (m0 eq m1) // cheap optimization
         this
       else (m0,m1) match {
@@ -175,60 +179,35 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
           if (m1 == varAtom)
             this
           else subst.get(v0) match {
-            case Some(m0) =>
-              val unifying = v0 -> m1
-              if (alreadyUnifying.contains(unifying)) {
-                if (allowRecursiveTerms) this
-                else RecursiveUnify(v0,m0,m1)
-              } else
-                unify(m0,m1,alreadyUnifying + unifying)
+            case Some((m0,_)) =>
+              unify(m0,m1)
             case None =>
-              Frame(subst + (v0 -> m1))
+              add(v0,m1)
           }
         case (_,Atom(_: Var)) =>
-          unify(m1,m0,alreadyUnifying)
-        case (Atom(Recursion(v,body)),_) => // TODO: test unif of 2 Recursions
-          val av = Atom(v)
-          unify(av,body,alreadyUnifying).flatMap(_.unify(av,m1,alreadyUnifying))
-        case (_,Atom(_: Recursion)) =>
-          unify(m1,m0,alreadyUnifying)
+          unify(m1,m0)
         case (h0 |*: t0,h1 |*: t1) =>
-          unify(h0,h1,alreadyUnifying).flatMap(_.unify(t0,t1,alreadyUnifying))
+          unify(h0,h1).flatMap(_.unify(t0,t1))
         case _ =>
           if (m0 == m1) this else CannotUnify(m0,m1)
       }
     def expansion (v: Var): Term = expansion(Atom(v))
-    def expansion (term: Term): Term = expansionAndVars(term,Set.empty)._1
-    def expansionAndVars (t: Term, expanding: Set[Var]): (Term,Set[Var]) =
-      t match {
-        case varAtom @ Atom(v: Var) =>
-          if (expanding.contains(v))
-            (varAtom,Set(v))
-          else subst.get(v) match {
-            case None =>
-              (varAtom,Set(v))
-            case Some(t) =>
-              val (x,vs) = expansionAndVars(t,expanding + v)
-              val exp: Term =
-                if (! vs.contains(v))
-                  x
-                else {
-                  val newV = FreshVar(fresh(),v)
-                  mapVarsToVars(
-                    Atom(Recursion(v,x)),u => if (u == v) newV else u)
-                }
-              (exp,vs)
-          }
-        case h |*: t =>
-          val (hx,hvs) = expansionAndVars(h,expanding)
-          val (tx,tvs) = expansionAndVars(t,expanding)
-          (hx |*: tx,hvs ++ tvs)
-        case _ =>
-          (t,Set.empty)
-      }
+    def expansion (m: Term): Term = m match {
+      case varAtom @ Atom(v: Var) =>
+        subst.get(v) match {
+          case None =>
+            varAtom
+          case Some((m,_)) =>
+            expansion(m)
+        }
+      case h |*: t =>
+        expansion(h) |*: expansion(t)
+      case _ =>
+        m
+    }
     override def toString: String =
       if (subst.isEmpty) "<empty frame>"
-      else subst.map { case (v,t) => s"$v = ${str(t)}" }.mkString("\n")
+      else subst.map { case (v,(t,_)) => s"$v = ${str(t)}" }.mkString("\n")
     def answerString (query: Query): String = {
       val vars = subst.keySet & query.variables
       if (vars.isEmpty) "Yes"
@@ -479,6 +458,9 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
       Good(Empty())
     case Atom(Sym(s)) =>
       Good(Atom(s match {
+// TODO: investigate: is there a bug with rules or queries that have more than
+// one wildcard? Could it be that when wildcards are refereshed, they are all
+// given the same freshness because they are all named _ ?
         case "_" => FreshVar(fresh(),BaseVar("_"))
         case _ if s.length > 0 && s.head.isLower => BaseVar((s))
         case _ => Const(Sym(s))
@@ -754,7 +736,7 @@ case class RoflMachine (allowRecursiveTerms: Boolean) {
   case class VerboseStrategy [S] (s: Strategy[S]) extends Strategy[S] {
     def startState (root: Search) = s.startState(root)
     def nextSearch (state: S, search: Search) = {
-      println(s"\n\n$state\n\n$search\n")
+      println(s"\n\n$state\n\n-------- At depth ${search.depth}:\n$search\n")
       io.StdIn.readLine
       s.nextSearch(state,search)
 // TODO: allow "q" (quit), "a" (all frames) like Interactive
@@ -907,7 +889,7 @@ newline        Continue (with doubled limit, if operation limit reached)
       }
     }
   }
-  case class  REPL [State] (
+  case class REPL [State] (
       base: Rulebase, strategy: Strategy[State] = IterativeDeepening) {
     def queryLoop (): Unit = {
       println("\nQuery (or . to stop, or :help for commands):")
@@ -938,14 +920,40 @@ newline        Continue (with doubled limit, if operation limit reached)
 
   // Main program //////////////////////////////////////////////////////////////
 
-  def main (args: Array[String]): Unit =
-    loadRulebase(args.toList) match {
-      case Good(rules) =>
-        println(s"Loaded: ${rules.mkString("\n","\n","\n")}")
-        REPL(Rulebase(rules)).queryLoop()
-      case bad @ Bad(_,_) =>
-        println("Errors:")
-        println(bad.toList.map(_.notedString).mkString("\n"))
+  def run [S] (
+      args: List[String], verbose: Boolean, strategy: Strategy[S]): Unit =
+    args match {
+      case Nil =>
+        println("""
+Usage: Rofl [-v] [-s<strategy>] <rulebaseFile>...
+
+where:
+
+-v      display info and wait for continuation at each search node visited
+-sB     iterative deepening (equivalent to breadth-first) strategy; default
+-sD     depth-first search strategy (like Prolog)
+-sI     interactive search strategy (choose next search subtree to explore)
+""")
+      case "-v" :: tail =>
+        run(tail,true,strategy)
+      case "-sD" :: tail =>
+        run(tail,verbose,DepthFirst)
+      case "-sB" :: tail =>
+        run(tail,verbose,IterativeDeepening)
+      case "-sI" :: tail =>
+        run(tail,verbose,Interactive)
+      case fileNames =>
+        loadRulebase(fileNames) match {
+          case Good(rules) =>
+            println(s"Loaded: ${rules.mkString("\n","\n","\n")}")
+            val strat = if (verbose) VerboseStrategy(strategy) else strategy
+            REPL(Rulebase(rules),strat).queryLoop()
+          case bad @ Bad(_,_) =>
+            println("Errors:")
+            println(bad.toList.map(_.notedString).mkString("\n"))
+        }
     }
+  def main (args: Array[String]): Unit =
+    run(args.toList,false,IterativeDeepening)
 
 }

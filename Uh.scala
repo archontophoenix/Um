@@ -86,7 +86,6 @@ object Uh {
   def isCloseDelim (ch: CodePoint) = closeDelimCharTypes.contains(charType(ch))
   def isPunctuation (ch: CodePoint) =
     isCaret(ch) || (punctCharTypes.contains(charType(ch)) & ! isAsciiQuote(ch))
-  def isOperatorStart (ch: CodePoint) = isBackquote(ch) || isPunctuation(ch)
   def isSemicolon (ch: CodePoint) = ch.code == ';'
 
   // Operator syntax (unary and binary) ////////////////////////////////////////
@@ -97,7 +96,6 @@ object Uh {
         ";",
         "~",
         "|",
-        "$",
         "\\",
         ",",
         ":",
@@ -105,6 +103,7 @@ object Uh {
         "&",
         "!",
         "<=>",
+        "$",
         "#",
         "+-",
         "*/%",
@@ -228,8 +227,8 @@ object Uh {
   val toEolComment =
     (char(';') ++ char(';') ++
         zeroOrOne(
-          flatWhite ++ zeroOrMore(charThat(_.code != '\n',"non-newline"))) ++
-            newline).
+            flatWhite ++ zeroOrMore(charThat(_.code != '\n',"non-newline"))) ++
+          oneOf(newline,Parser.endOfInput(Nil))).
       expecting("to-end-of-line comment")
   val separator =
     oneOrMore(oneOf(toEolComment,white)).expecting("whitespace or comment")
@@ -247,7 +246,7 @@ object Uh {
     oneOf(identSym,charLiteral,stringLiteral).
       expecting("alphanumeric identifier or char or string literal")
   val rightUnSym =
-    (backquote ++ zeroOrMore(punct) ++ zeroOrOne(symCont)).
+    (oneOrMore(backquote) ++ zeroOrMore(punct) ++ zeroOrOne(symCont)).
       expecting(
         "backquote, " +
           "or right-associative prefix operator starting with backquote")
@@ -332,7 +331,8 @@ object Uh {
     def chsToToken (chs: List[Ch]): Token =
       if (chs.isEmpty) sys.error("Empty token!")
       else TextToken(chListToString(chs),chs.head._2)
-    oneOf(separator,openDelim,closeDelim,leftUnSym,rightUnSym,binSym).
+    oneOf(
+        openDelim,closeDelim,leftUnSym,rightUnSym,oneOfMaybe(separator,binSym)).
       map { chs: List[Ch] => chsToToken(chs) }
   }
   def tokens (in: Chs): (Hope[Input[Token]],EndOfInputToken) = {
@@ -824,9 +824,9 @@ object Uh {
 
   // Conversion of Exp to string, recognizing Uh expression syntax /////////////
 
-  def uhStringPrecedenceLeftAssoc [A] (
+  def uhStringPrecedenceLeftAssocUngrouped [A] (
         sexp: Sexp[A,_], uhAtom: A => Option[Atomic]):
-      (String,Option[(Int,Boolean)]) = {
+      (String,Option[(Int,Boolean)],Boolean) = {
     object UhAtom {
       def unapply (a: A): Option[Atomic] = uhAtom(a)
     }
@@ -839,15 +839,12 @@ object Uh {
     def validRightUn (s: String) = valid(s,rightUnSym)
     def validBin (s: String) = valid(s,binSym)
     def maybeParen (sexp: Sexp[A,_], prec: Int, assoc: Boolean): String =
-      uhStringPrecedenceLeftAssoc(sexp,uhAtom) match {
-        case (s,Some((p,a))) =>
-          if ((p < prec || (p == prec && a != assoc))
-              && ! (s.startsWith("(") || s.startsWith("[")))
-            s"($s)"
-          else
-            s
-        case (s,None) =>
-          s
+      uhStringPrecedenceLeftAssocUngrouped(sexp,uhAtom) match {
+        case (s,Some((p,a)),ungrouped) =>
+          if ((p < prec || (p == prec && a != assoc)) && ungrouped) s"($s)"
+          else s
+        case (s,None,ungrouped) =>
+          if (ungrouped) s"($s)" else s
       }
     def lissString (liss: Liss[A,_]): String =
       liss.mapElems((e: Sexp[A,_]) => maybeParen(e,Integer.MAX_VALUE,true)).
@@ -874,17 +871,17 @@ object Uh {
       }
     sexp match {
       case Empty () =>
-        ("()",None)
+        ("()",None,false)
       case Atom(UhAtom(Sym(s))) =>
         (if (validId(s)) s
             else if (validRightUn(s) || validBin(s)) s"($s)"
             else "(`\"" ++ s ++ "\")",
-          None)
+          None,false)
       case Atom(a) =>
-        (a.toString,None)
+        (a.toString,None,false)
       case Atom(UhAtom(Sym(s))) :|: arg :|: Empty() if validRightUn(s) =>
         val (pr,assoc) = (maxBinaryPrecedence + 2,false)
-        (s"$s ${maybeParen(arg,pr,assoc)}",Some((pr,assoc)))
+        (s"$s ${maybeParen(arg,pr,assoc)}",Some((pr,assoc)),true)
       case Atom(UhAtom(Sym(s))) :|: arg0 :|: arg1 :|: Empty() if validBin(s) =>
         val assoc = ! infixRightAssocEndings.contains(s.last)
         val (inPrL,inPrR,outPr) =
@@ -893,26 +890,26 @@ object Uh {
             case None => (Integer.MAX_VALUE,Integer.MAX_VALUE,Integer.MIN_VALUE)
           }
         (s"${maybeParen(arg0,inPrL,assoc)} $s ${maybeParen(arg1,inPrR,assoc)}",
-          Some((outPr,assoc)))
+          Some((outPr,assoc)),true)
       case liss @ (Atom(UhAtom(Sym(s))) :|: arg0 :|: args) if validId(s) =>
         val (pr,assoc) = (maxBinaryPrecedence + 1,true)
         (liss.mapElems((e: Sexp[A,_]) => maybeParen(e,pr + 1,assoc)).
             mkString(" "),
-          Some((pr,assoc)))
+          Some((pr,assoc)),true)
       case liss @ (Atom(UhAtom(Sym(s))) :|: tail) => compound(s,tail) match {
-        case Some(rslt) => (rslt,None)
-        case None => (lissString(liss),None)
+        case Some(rslt) => (rslt,None,false)
+        case None => (lissString(liss),None,false)
       }
       case liss: Liss[A,_] =>
-        (lissString(liss),None)
+        (lissString(liss),None,false)
       case hd |: tl =>
         val (pr,assoc) = (infixPrecedences('|'),false)
         (s"${maybeParen(hd,pr,assoc)} |: ${maybeParen(tl,pr,assoc)}",
-          Some(pr,assoc))
+          Some(pr,assoc),true)
     }
   }
   def uhString [A] (sexp: Sexp[A,_], uhAtom: A => Option[Atomic]): String =
-    uhStringPrecedenceLeftAssoc(sexp,uhAtom)._1
+    uhStringPrecedenceLeftAssocUngrouped(sexp,uhAtom)._1
   def uhStr (sexp: Exp): String = uhString(sexp,(a: Atomic) => Some(a))
 
   // Testing ///////////////////////////////////////////////////////////////////
@@ -973,6 +970,7 @@ try:   try parsing expressions interactively
         test("( a )",atm("a")),
         test("[ a ]",lis("a")),
         test("`-a",lis("`-","a")),
+        test("``a",lis("``","a")),
         test("`- a",lis("`-","a")),
         test("`-`+a",Liss(atm("`-"),lis("`+","a"))),
         test("`- `+ a",Liss(atm("`-"),lis("`+","a"))),
@@ -1070,7 +1068,9 @@ try:   try parsing expressions interactively
           "a \u00bf b \u00bf c",
           Liss(atm("\u00bf"),lis("\u00bf","a","b"),atm("c"))),
         testShouldFail("a \u00a1 b \u00bf c"),
-        testShouldFail("a \u00bf b \u00a1 c")
+        testShouldFail("a \u00bf b \u00a1 c"),
+        test("a; b",lis(";","a","b")),
+        test("a ;; comment not terminated by eol",atm("a"))
       )
     val (passed,failed) = tests.partition(bo => bo)
     println(

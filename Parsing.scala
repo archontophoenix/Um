@@ -141,6 +141,10 @@ object Parsing {
   object Parser {
     def validate [I,A] (v: Hope[A]) = Parser((in: Input[I]) => (v,in))
     def point [I,A] (a: A): Parser[I,A] = validate(Good(a))
+    def endOfInput [I,A] (a: A): Parser[I,A] = Parser(in => in.split match {
+      case (None,rest) => (Good(a),rest)
+      case (Some(_),rest) => (err(in,"Not at end of input"),rest)
+    })
     def next [I]: Parser[I,I] = Parser(in => in.split match {
       case (None,rest) => (err(in,"Empty input"),rest)
       case (Some(i),rest) => (Good(i),rest)
@@ -157,7 +161,7 @@ object Parsing {
     def app [I,A,B] (pf: Parser[I,A => B]) (pa: => Parser[I,A]): Parser[I,B] =
       map2(pf,pa)(_(_))
     def fail [I] (
-          msg: String = "Failure",where: Option[Location] = None):
+          msg: String = "Failure", where: Option[Location] = None):
         Parser[I,Nothing] = Parser(in => {
       (Bad(Atom(msg).note(where.getOrElse(in.where))),in)
     })
