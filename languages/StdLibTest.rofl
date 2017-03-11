@@ -1,0 +1,83 @@
+;; =============================================================================
+;; Tests of standard library rules.
+;;
+;; Requires: StdLib Test
+
+ZeroPlus m => n ~|
+  0 + m => n
+
+Tests ZeroPlus {
+  Zero0P: 0 => 0
+  Zero3P: 3 => 3
+}
+
+TwoPlus m => n ~|
+  2 + m => n
+
+Tests TwoPlus {
+  Zero2: 0 => 2
+  Three2: 3 => 5
+}
+
+ZeroMinus m => n ~|
+  0 - m => n
+
+Tests ZeroMinus {
+  Zero0M: 0 => `+0
+  Zero1M: 1 => `-1
+}
+
+ThreeMinus m => n ~|
+  3 - m => n
+
+Tests ThreeMinus {
+  Zero3: 0 => `+3
+  Two3: 2 => `+1
+  Three3: 3 => `+0
+  Four3: 4 => `-1
+  Six3: 6 => `-3
+}
+
+At123 pos => val ~|
+  [1 2 3] @ pos => val
+
+Tests At123 {
+  At0: 0 => 1
+  At2: 2 => 3
+}
+
+CondAt123 pos => val ~|
+  [1 2 3] @? pos => val
+
+Tests CondAt123 {
+  CondAt0: 0 => Good 1
+  CondAt2: 2 => Good 3
+  CondAt3: 3 => Bad 0
+  CondAt5: 5 => Bad 2
+}
+
+Rev l0 => l1 ~|
+  Reverse l0 Is l1
+
+Tests Rev {
+  RevNil: [] => []
+  Rev123: [1 2 3] => [3 2 1]
+}
+
+FirstPosIn12321 x => pos ~|
+  FirstIndexOf x In [1 2 3 2 1] Is pos
+
+Tests FirstPosIn12321 {
+  First1: 1 => 0
+  First2: 2 => 1
+  First3: 3 => 2
+}
+
+Take12345 n => l ~|
+  Take n From [1 2 3 4 5] Is l
+
+Tests Take12345 {
+  Take0: 0 => []
+  Take2: 2 => [1 2]
+  Take5: 5 => [1 2 3 4 5]
+}

@@ -1,0 +1,60 @@
+;; =============================================================================
+;; Test runner.
+;;
+;; Requires: StdLib
+;;
+;; Expects a separate Rofl file to provide a rule:
+;;
+;;    Tests fun <tests>
+;;
+;; where <tests> is a semicolon-separated list of test cases of the form:
+;;
+;;    testName: arg => desiredResult
+;;
+;; Each case means that "fun arg => result" should be derivable.
+;;
+;; Queries that do useful things:
+;;
+;; . Test testName => answer: runs the test testName and shows whether it passes
+;;   (shows nothing if the test fails to run).
+;;
+;; , TestCount fun => n: counts how many tests exist for the desired function
+;;   (if there is such a function).
+;;
+;; . TestNames fun => names: shows the test names for the given function (if
+;;   there are any).
+;;
+;; Use a variable (or wildcard) as an argument to run all tests or see info on
+;; all functions.
+
+Test testName => answer ~|
+  FindTest (testName: arg => desiredResult) For fun,
+  fun arg => actualResult,
+  actualResult *> {
+    desiredResult |
+      answer = (OK: testName)
+    _ |
+      answer = (FAILURE: testName: GOT actualResult, WANTED desiredResult)
+  }
+
+FindTest (testName: arg => desiredResult) For fun ~|
+  Tests fun tests,
+  FindTest (testName: arg => desiredResult) In tests
+FindTest (testName: arg => desiredResult) In (testName: arg => desiredResult)
+FindTest (testName: arg => desiredResult) In (testName: arg => desiredResult; _)
+FindTest (testName: arg => desiredResult) In (_ ; moreTests) ~|
+  FindTest (testName: arg => desiredResult) In moreTests
+
+TestCount fun => n ~|
+  Tests fun tests,
+  TestCountIn tests => n
+TestCountIn (tn : a => r) => 1
+TestCountIn (_ ; moreTests) => (S |: n) ~|
+  TestCountIn moreTests => n
+
+TestNames fun => names ~|
+  Tests fun tests,
+  TestNamesIn tests => names
+TestNamesIn (testName: a => r) => [testName]
+TestNamesIn (testName: a => r; moreTests) => (testName |: moreNames) ~|
+  TestNamesIn moreTests => moreNames

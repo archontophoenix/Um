@@ -1,0 +1,95 @@
+;; =============================================================================
+;; Standard library of generally useful rules
+
+;; =============================================================================
+;; Equality by unification
+
+x = x
+
+;; =============================================================================
+;; Natural number operations
+
+IsNat 0
+IsNat (S |: n) ~|
+  IsNat n
+
+IsNat n Is answer ~|
+  n *> {
+    0 |
+      answer = True
+    (S |: m) |
+      IsNat m Is answer
+    _ |
+      answer = False
+  }
+
+0 =< n ~|
+  IsNat n
+(S |: m) =< (S |: n) ~|
+  m =< n
+
+0 < (S |: n) ~|
+  IsNat n
+(S |: m) < (S |: n) ~|
+  m < n
+
+0 + n => n ~|
+  IsNat n
+(S |: m) + n => (S |: mn) ~|
+  m + n => mn
+
+n - 0 => `+n ~|
+  IsNat n
+0 - (S |: n) => `-(S |: n) ~|
+  IsNat n
+(S |: m) - (S |: n) => mn ~|
+  m - n => mn
+
+IfIsNat n Then ifNat Else ifNotNat ~|
+  IsNat n Is answer,
+  answer *> {
+    True |
+      ifNat
+    False |
+      ifNotNat
+  }
+
+;; =============================================================================
+;; List operations
+
+(hd |: _) @ 0 => hd
+(_ |: tl) @ (S |: n) => x ~|
+  tl @ n => x
+
+;; Conditional list index: "list @? index => result" returns:
+;; . Good item: if item is the (0-origin) indexth element of list
+;; . Bad n: if list would need at least n+1 more elements for index to be valid
+[] @? n => Bad n ~|
+  IsNat n
+(hd |: _) @? 0 => Good hd
+(_ |: tl) @? (S |: n) => x ~|
+  tl @? n => x
+
+Reverse l Is lRev ~|
+  Reverse l Onto [] Is lRev
+Reverse [] Onto l Is l
+Reverse (hd |: tl) Onto l Is l1 ~|
+  Reverse tl Onto (hd |: l) Is l1
+
+FirstIndexOf x In (hd |: tl) Is n ~|
+  x *> {
+    hd |
+      n = 0
+    _ |
+      FirstIndexOf x In tl Is m,
+      n = (S |: m)
+  }
+
+Take n From l Is newL ~|
+  TakeReversed n From l Is lRev,
+  Reverse lRev Is newL
+TakeReversed n From l Is lRev ~|
+  TakeReversed n From l Onto [] Is lRev
+TakeReversed 0 From lSrc Onto lTarg Is lTarg
+TakeReversed (S |: n) From (hd |: tl) Onto lTarg Is newL ~|
+  TakeReversed n From tl Onto (hd |: lTarg) Is newL

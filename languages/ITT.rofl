@@ -1,0 +1,131 @@
+;; =============================================================================
+;; A typechecker for a dependently typed language with intensional judgmental
+;; equality.
+;;
+;; Requires: StdLib
+;;
+;; The raw dependently typed lambda calculus implemented here has 5 kinds of
+;; terms:
+;;
+;;    `! n              variable, where n is a bottom-up deBruijn index
+;;    parmType \ body   lambda abstraction whose parameter has type parmType
+;;    fun $ arg         application of fun to arg
+;;    parmType ? resultType
+;;                      type of (dependent) function that takes parmType to
+;;                      resultType
+;;    U i               type of types at universe level i
+;;
+;; Typechecking each term of the calculus takes place in a context, which
+;; consists of two parts:
+;;
+;; . A stack that takes the form of a Rofl list, where deBruijn index 0 refers
+;;   to the bottom of the stack (the opposite of the usual convention). Each
+;;   entry is the type of the variable at the corresponding binder depth in the
+;;   program being typechecked.
+;;
+;; . The depth to which binders are nested at the point in question, that is,
+;;   the size of the stack.
+;;
+;; Using the reverse of the usual deBruijn index convention minimizes the need
+;; to perform arithmetic on deBruijn indices of free variables, at the cost of
+;; having to keep explicit track of the current binder depth.
+;;
+;; A type value can take any of the above forms except a lambda abstraction.
+;;
+;; The calculus implements the following relations:
+;;
+;;    depth |+ term => value
+;;                      The term term evaluates to value value at binder depth
+;;                      depth
+;;    depth , ctx |- term : type
+;;                      The term term has type type in context ctx at depth
+;;                      depth
+;;    Apply funVal To argVal AtDepth depth Is resultVal
+;;                      Completes application after function and argument have
+;;                      been evaluated
+;;    Subst value ForVar n In term Is result
+;;                      Substitutes value for variable `!n in term to produce
+;;                      result
+;;
+;; To ensure consistency, the calculus must obey these rules:
+;;
+;; . The typechecker can call the evaluator, but not vice versa (evaluation
+;;   environments do not contain the type information that the typechecker
+;;   would need).
+;;
+;; . No term can be evaluated before it is typechecked (a term that does not
+;;   typecheck may be ill-formed or contain unbound variables).
+
+;; =============================================================================
+;; Evaluation rules
+
+_ |+ `!n => `!n
+
+depth |+ (parmType\ body) => (parmTypeVal\ bodyTypeVal) ~|
+  (depth |+ parmType => parmTypeVal),
+  ((S |: depth) |+ bodyType => bodyTypeVal)
+
+depth |+ fun $ arg => resultVal ~|
+  (depth |+ fun => funVal),
+  (depth |+ arg => argVal),
+  Apply funVal To argVal AtDepth depth Is result
+
+depth |+ (parmType? resultType) => (parmTypeVal ? resultTypeVal) ~|
+  (depth |+ parmType => parmTypeVal),
+  ((S |: depth) |+ resultType => resultTypeVal)
+
+_ |+ U i => U i
+
+;; =============================================================================
+;; Application of evaluated terms to evaluated arguments
+
+Apply `!n To argVal AtDepth _ Is (`!n $ argVal)
+Apply (_ \  body) To argVal AtDepth depth Is resultVal ~|
+  Subst argVal ForVar depth In body Is result,
+  depth |+ result => resultVal
+Apply (neutralFun $ arg0) To argVal AtDepth _ Is (neutralFun $ arg0 $ argVal)
+
+;; =============================================================================
+;; Substitution
+
+Subst val ForVar n In `!n Is val
+
+Subst val ForVar n In [op term0 term1] Is [op term0Subst term1Subst] ~|
+  IsTermOp op,
+  Subst val ForVar n In term0 Is term0Subst,
+  Subst val ForVar n In term1 Is term1Subst
+IsTermOp (\)
+IsTermOp ($)
+IsTermOp (?)
+
+Subst _ ForVar n In (U i) Is (U i)
+
+;; =============================================================================
+;; Typechecking rules
+
+depth,ctx |- `!n: typeVal ~|
+  depth - (S |: n) => `+index,
+  ctx @ index => typeVal
+
+depth,ctx |- (parmType\ body): (parmTypeVal? resultTypeVal) ~|
+  (depth,ctx |- parmType: U _),
+  (depth |+ parmType => parmTypeVal),
+  ((S |: depth),(parmTypeVal |: ctx) |- body: resultTypeVal)
+
+depth,ctx |- fun $ arg: resultTypeVal ~|
+  (depth,ctx |- fun: parmTypeVal ? resultFunVal),
+  (depth,ctx |- arg: parmTypeVal),
+  Subst arg ForVar depth In resultFunVal Is resultType,
+  (depth |+ resultType => resultTypeVal)
+
+depth,ctx |- parmType? resultType: U i ~|
+  (depth,ctx |- parmType: U i),
+  (depth |+ parmType => parmTypeVal),
+  ((S |: depth),(parmTypeVal |: ctx) |- resultType: U i)
+
+depth,ctx |- U i: U (S |: i)
+
+;; Cumulativity of universes: this means lots of redundant typings. Maybe add a
+;; second pass (after typechecking) to verify universe level consistency?
+depth,ctx |- type: U (S |: i) ~|
+  type: U i
