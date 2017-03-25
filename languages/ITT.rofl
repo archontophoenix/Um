@@ -13,41 +13,44 @@
 ;;    parmType ? resultType
 ;;                      type of (dependent) function that takes parmType to
 ;;                      resultType
-;;    U i               type of types at universe level i
+;;    Ty                type of types (without stratification; the idea is that
+;;                      universe level consistency can be checked in a later
+;;                      pass)
 ;;
-;; Typechecking each term of the calculus takes place in a context, which
-;; consists of two parts:
-;;
-;; . A stack that takes the form of a Rofl list, where deBruijn index 0 refers
-;;   to the bottom of the stack (the opposite of the usual convention). Each
-;;   entry is the type of the variable at the corresponding binder depth in the
-;;   program being typechecked.
-;;
-;; . The depth to which binders are nested at the point in question, that is,
-;;   the size of the stack.
-;;
-;; Using the reverse of the usual deBruijn index convention minimizes the need
-;; to perform arithmetic on deBruijn indices of free variables, at the cost of
-;; having to keep explicit track of the current binder depth.
+;; Typechecking each term of the calculus takes place in a context, which is a
+;; stack that takes the form of a Rofl list, where deBruijn index 0 refers to
+;; the top of the stack. Each entry is the type of the variable at the
+;; corresponding binder depth in the program being typechecked. Each entry is a
+;; value, that is, reduced as far as possible -- this means that two
+;; intensionally equal types will unify, so there is no need for a separate rule
+;; defining a judgmental equality for types.
 ;;
 ;; A type value can take any of the above forms except a lambda abstraction.
 ;;
 ;; The calculus implements the following relations:
 ;;
-;;    depth |+ term => value
-;;                      The term term evaluates to value value at binder depth
-;;                      depth
-;;    depth , ctx |- term : type
-;;                      The term term has type type in context ctx at depth
-;;                      depth
-;;    Apply funVal To argVal AtDepth depth Is resultVal
+;;    term |=> value
+;;                      The term term evaluates to value value
+;;    ctx |- term : typeVal
+;;                      The term term has type value typeVal in context ctx
+;;    Apply funVal To argVal Is resultVal
 ;;                      Completes application after function and argument have
-;;                      been evaluated
-;;    Subst value ForVar n In term Is result
-;;                      Substitutes value for variable `!n in term to produce
-;;                      result
+;;                      been evaluated to produce result value resultVal
+;;    Subst src ForVar n In dst Is result
+;;                      Substitutes src for variable `!n in dst to produce
+;;                      result. src, dst, and result are terms (not necessarily
+;;                      fully reduced)
+;;    Shift upOrDown AtDepth depth In term Is result
+;;                      Adjusts deBruijn indices in term term, which has been
+;;                      substituted into another term at binder nesting depth
+;;                      depth. upOrDown is Down (decrease adjusted indices by 1)
+;;                      or (Up n) (increase adjusted indices by n).
+;;    IsConst term      evaluating or substituting into term results in term
 ;;
-;; To ensure consistency, the calculus must obey these rules:
+;; The rules for shifting of deBruijn indices are adapted from Benjamin Pierce's
+;; "Types and Programming Languages" (2002) starting on page 78,
+;;
+;; To ensure consistency, the typechecker must obey these rules:
 ;;
 ;; . The typechecker can call the evaluator, but not vice versa (evaluation
 ;;   environments do not contain the type information that the typechecker
@@ -57,75 +60,114 @@
 ;;   typecheck may be ill-formed or contain unbound variables).
 
 ;; =============================================================================
+;; Constants and other useful facts
+
+IsConst Ty
+
+IsBinderOp (\)
+IsBinderOp (?)
+
+;; =============================================================================
 ;; Evaluation rules
 
-_ |+ `!n => `!n
+`!n |=> `!n
 
-depth |+ (parmType\ body) => (parmTypeVal\ bodyTypeVal) ~|
-  (depth |+ parmType => parmTypeVal),
-  ((S |: depth) |+ bodyType => bodyTypeVal)
+(parmType\ body) |=> (parmTypeVal\ bodyVal) ~|
+  (parmType |=> parmTypeVal),
+  (body |=> bodyVal)
 
-depth |+ fun $ arg => resultVal ~|
-  (depth |+ fun => funVal),
-  (depth |+ arg => argVal),
-  Apply funVal To argVal AtDepth depth Is result
+fun $ arg |=> resultVal ~|
+  (fun |=> funVal),
+  (arg |=> argVal),
+  Apply funVal To argVal Is resultVal
 
-depth |+ (parmType? resultType) => (parmTypeVal ? resultTypeVal) ~|
-  (depth |+ parmType => parmTypeVal),
-  ((S |: depth) |+ resultType => resultTypeVal)
+(parmType? resultType) |=> (parmTypeVal? resultTypeVal) ~|
+  (parmType |=> parmTypeVal),
+  (resultType |=> resultTypeVal)
 
-_ |+ U i => U i
+term |=> term ~|
+  IsConst term
 
 ;; =============================================================================
 ;; Application of evaluated terms to evaluated arguments
 
-Apply `!n To argVal AtDepth _ Is (`!n $ argVal)
-Apply (_ \  body) To argVal AtDepth depth Is resultVal ~|
-  Subst argVal ForVar depth In body Is result,
-  depth |+ result => resultVal
-Apply (neutralFun $ arg0) To argVal AtDepth _ Is (neutralFun $ arg0 $ argVal)
+Apply `!n To argVal Is (`!n $ argVal)
+Apply (_ \  bodyVal) To argVal Is resultVal ~|
+  Shift (Up 1) AtDepth 0 In argVal Is argValUp,
+  Subst argValUp ForVar 0 In bodyVal Is resultUp,
+  Shift Down AtDepth 0 In resultUp Is result,
+  (result |=> resultVal)
+Apply (neutralFun $ arg0) To argVal Is (neutralFun $ arg0 $ argVal)
 
 ;; =============================================================================
 ;; Substitution
 
-Subst val ForVar n In `!n Is val
+Subst src ForVar n In `!m Is result ~|
+  n - m => diff,
+  VarSubst src InVar m By diff Is result
+VarSubst src InVar _ By `+0 Is src
+VarSubst _ InVar m By `+(S |: x) Is `!m 
+VarSubst _ InVar m By `-x Is `!m 
 
-Subst val ForVar n In [op term0 term1] Is [op term0Subst term1Subst] ~|
-  IsTermOp op,
-  Subst val ForVar n In term0 Is term0Subst,
-  Subst val ForVar n In term1 Is term1Subst
-IsTermOp (\)
-IsTermOp ($)
-IsTermOp (?)
+Subst src ForVar n In [binderOp parmType body] Is [
+    binderOp parmTypeSubst bodySubst] ~|
+  IsBinderOp binderOp,
+  Subst src ForVar n In parmType Is parmTypeSubst,
+  Shift (Up 1) AtDepth 0 In src Is srcUp,
+  Subst srcUp ForVar (S |: n) In body Is bodySubst
 
-Subst _ ForVar n In (U i) Is (U i)
+Subst src ForVar n In (fun $ arg) Is (funSubst $ argSubst) ~|
+  Subst src ForVar n In fun Is funSubst,
+  Subst src ForVar n In arg Is argSubst
+
+Subst src ForVar n In const Is const ~|
+  IsConst const
+
+;; =============================================================================
+;; Shifting of deBruijn indices for substitution
+
+Shift _ AtDepth depth In `!n Is `!n ~|
+  n < depth
+Shift (Up m) AtDepth depth In `!n Is `!k ~|
+  depth =< n,
+  m + n => k
+Shift Down AtDepth depth In `!(S |: n) Is `!n ~|
+  depth =< (S |: n)
+
+Shift upOrDown AtDepth depth In [binderOp parmType body] Is [
+    binderOp parmTypeShift bodyShift] ~|
+  IsBinderOp binderOp,
+  Shift upOrDown AtDepth depth In parmType Is parmTypeShift,
+  Shift upOrDown AtDepth (S |: depth) In body Is bodyShift
+
+Shift upOrDown AtDepth depth In (fun $ arg) Is (funShift $ argShift) ~|
+  Shift upOrDown AtDepth depth In fun Is funShift,
+  Shift upOrDown AtDepth depth In arg Is argShift
+
+Shift _ AtDepth depth In const Is const ~|
+  IsConst const
 
 ;; =============================================================================
 ;; Typechecking rules
 
-depth,ctx |- `!n: typeVal ~|
-  depth - (S |: n) => `+index,
-  ctx @ index => typeVal
+ctx |- `!n: typeVal ~|
+  ctx @ n => typeValDown,
+  Shift (Up (S |: n)) AtDepth 0 In typeValDown Is typeVal
 
-depth,ctx |- (parmType\ body): (parmTypeVal? resultTypeVal) ~|
-  (depth,ctx |- parmType: U _),
-  (depth |+ parmType => parmTypeVal),
-  ((S |: depth),(parmTypeVal |: ctx) |- body: resultTypeVal)
+ctx |- (parmType\ body): (parmTypeVal? resultTypeVal) ~|
+  (ctx |- parmType: Ty),
+  (parmType |=> parmTypeVal),
+  ((parmTypeVal |: ctx) |- body: resultTypeVal)
 
-depth,ctx |- fun $ arg: resultTypeVal ~|
-  (depth,ctx |- fun: parmTypeVal ? resultFunVal),
-  (depth,ctx |- arg: parmTypeVal),
-  Subst arg ForVar depth In resultFunVal Is resultType,
-  (depth |+ resultType => resultTypeVal)
+ctx |- fun $ arg: resultTypeVal ~|
+  (ctx |- fun: parmTypeVal? resultBodyVal),
+  (ctx |- arg: parmTypeVal),
+  (arg |=> argVal),
+  Apply (parmTypeVal\ resultBodyVal) To argVal Is resultTypeVal
 
-depth,ctx |- parmType? resultType: U i ~|
-  (depth,ctx |- parmType: U i),
-  (depth |+ parmType => parmTypeVal),
-  ((S |: depth),(parmTypeVal |: ctx) |- resultType: U i)
+ctx |- parmType? resultType: Ty ~|
+  (ctx |- parmType: Ty),
+  (parmType |=> parmTypeVal),
+  ((parmTypeVal |: ctx) |- resultType: Ty)
 
-depth,ctx |- U i: U (S |: i)
-
-;; Cumulativity of universes: this means lots of redundant typings. Maybe add a
-;; second pass (after typechecking) to verify universe level consistency?
-depth,ctx |- type: U (S |: i) ~|
-  type: U i
+ctx |- Ty: Ty
